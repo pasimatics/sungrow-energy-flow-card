@@ -1,0 +1,6 @@
+{
+  "name": "Sungrow Energy Flow Card",
+  "filename": "sungrow-energy-flow-card.js",
+  "render_readme": true,
+  "homeassistant": "2024.8.0"
+}
