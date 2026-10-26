@@ -3,7 +3,7 @@
  * Animated power flow card for Sungrow hybrid inverters (Modbus, mkaiser sungrow integration).
  */
 
-const CARD_VERSION = "0.2.0";
+const CARD_VERSION = "0.3.0";
 
 const DEFAULT_ENTITIES = {
   pv_power: "sensor.total_dc_power",
@@ -30,6 +30,13 @@ const DEFAULT_ENTITIES = {
   total_import: "sensor.total_imported_energy",
   total_direct: "sensor.total_direct_energy_consumption",
   total_battery_discharge: "sensor.total_battery_discharge",
+};
+
+const DEFAULT_OPTIONS = {
+  max_power: 10000,
+  pv_max: 10000,
+  animation_speed: 1,
+  history_days: 14,
 };
 
 const HISTORY_REFRESH_MS = 30 * 60 * 1000;
@@ -87,6 +94,11 @@ class SungrowEnergyFlowCard extends HTMLElement {
     return {};
   }
 
+  static async getConfigElement() {
+    await ensureHaForm();
+    return document.createElement("sungrow-energy-flow-card-editor");
+  }
+
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
@@ -96,13 +108,7 @@ class SungrowEnergyFlowCard extends HTMLElement {
   }
 
   setConfig(config) {
-    this._config = {
-      max_power: 10000,
-      pv_max: 10000,
-      animation_speed: 1,
-      history_days: 14,
-      ...config,
-    };
+    this._config = { ...DEFAULT_OPTIONS, ...config };
     this._entities = { ...DEFAULT_ENTITIES, ...(config.entities || {}) };
     this._built = false;
     this._history = null;
@@ -787,6 +793,226 @@ const STYLES = `
   }
 `;
 
+// ---------- visual editor ----------
+
+const EDITOR_LABELS = {
+  de: {
+    show_header: "Kopfzeile anzeigen",
+    title: "Titel",
+    pv_max: "PV-Spitzenleistung",
+    max_power: "Leistung für volle Animation",
+    animation_speed: "Animationsgeschwindigkeit",
+    history_days: "Tage im Autarkie-Verlauf",
+    power: "Leistung",
+    battery: "Batterie",
+    inverter: "Wechselrichter",
+    daily: "Tagesenergie",
+    totals: "Gesamtzähler (Verlauf)",
+    pv_power: "PV-Leistung",
+    load_power: "Hausverbrauch",
+    grid_import_power: "Netzbezug",
+    grid_export_power: "Einspeisung",
+    battery_charge_power: "Batterie Ladeleistung",
+    battery_discharge_power: "Batterie Entladeleistung",
+    mppt1_power: "String 1 (MPPT1)",
+    mppt2_power: "String 2 (MPPT2)",
+    battery_soc: "Ladestand",
+    battery_energy: "Gespeicherte Energie",
+    battery_capacity: "Kapazität",
+    battery_temperature: "Batterietemperatur",
+    inverter_state: "Status",
+    inverter_temperature: "Temperatur",
+    daily_pv: "PV-Erzeugung heute",
+    daily_import: "Netzbezug heute",
+    daily_export: "Einspeisung heute",
+    daily_battery_charge_pv: "Batterieladung aus PV heute",
+    daily_battery_discharge: "Batterieentladung heute",
+    daily_direct: "Direktverbrauch heute",
+    total_import: "Netzbezug gesamt",
+    total_direct: "Direktverbrauch gesamt",
+    total_battery_discharge: "Batterieentladung gesamt",
+  },
+  en: {
+    show_header: "Show header",
+    title: "Title",
+    pv_max: "PV peak power",
+    max_power: "Power for full animation",
+    animation_speed: "Animation speed",
+    history_days: "Days in self-sufficiency history",
+    power: "Power",
+    battery: "Battery",
+    inverter: "Inverter",
+    daily: "Daily energy",
+    totals: "Lifetime counters (history)",
+    pv_power: "PV power",
+    load_power: "House load",
+    grid_import_power: "Grid import",
+    grid_export_power: "Grid export",
+    battery_charge_power: "Battery charge power",
+    battery_discharge_power: "Battery discharge power",
+    mppt1_power: "String 1 (MPPT1)",
+    mppt2_power: "String 2 (MPPT2)",
+    battery_soc: "State of charge",
+    battery_energy: "Stored energy",
+    battery_capacity: "Capacity",
+    battery_temperature: "Battery temperature",
+    inverter_state: "State",
+    inverter_temperature: "Temperature",
+    daily_pv: "PV production today",
+    daily_import: "Grid import today",
+    daily_export: "Grid export today",
+    daily_battery_charge_pv: "Battery charge from PV today",
+    daily_battery_discharge: "Battery discharge today",
+    daily_direct: "Direct consumption today",
+    total_import: "Grid import total",
+    total_direct: "Direct consumption total",
+    total_battery_discharge: "Battery discharge total",
+  },
+};
+
+const EDITOR_HELPERS = {
+  de: {
+    title: "Leer lassen für den Standardtitel",
+    animation_speed: "1 = normal, kleiner = langsamer",
+    history_days: "0 blendet den Verlauf aus",
+    totals: "Benötigen Langzeitstatistiken (state_class total / total_increasing)",
+  },
+  en: {
+    title: "Leave empty for the default title",
+    animation_speed: "1 = normal, lower = slower",
+    history_days: "0 hides the history",
+    totals: "Require long-term statistics (state_class total / total_increasing)",
+  },
+};
+
+const ENTITY_GROUPS = [
+  {
+    name: "power",
+    icon: "mdi:flash",
+    keys: [
+      "pv_power", "load_power", "grid_import_power", "grid_export_power",
+      "battery_charge_power", "battery_discharge_power", "mppt1_power", "mppt2_power",
+    ],
+  },
+  { name: "battery", icon: "mdi:battery", keys: ["battery_soc", "battery_energy", "battery_capacity", "battery_temperature"] },
+  { name: "inverter", icon: "mdi:sine-wave", keys: ["inverter_state", "inverter_temperature"] },
+  {
+    name: "daily",
+    icon: "mdi:calendar-today",
+    keys: [
+      "daily_pv", "daily_import", "daily_export",
+      "daily_battery_charge_pv", "daily_battery_discharge", "daily_direct",
+    ],
+  },
+  { name: "totals", icon: "mdi:counter", keys: ["total_import", "total_direct", "total_battery_discharge"] },
+];
+
+const EDITOR_SCHEMA = [
+  { name: "show_header", selector: { boolean: {} } },
+  { name: "title", selector: { text: {} } },
+  {
+    name: "",
+    type: "grid",
+    schema: [
+      { name: "pv_max", selector: { number: { min: 100, max: 100000, step: 100, mode: "box", unit_of_measurement: "W" } } },
+      { name: "max_power", selector: { number: { min: 100, max: 100000, step: 100, mode: "box", unit_of_measurement: "W" } } },
+      { name: "animation_speed", selector: { number: { min: 0.1, max: 3, step: 0.1, mode: "slider" } } },
+      { name: "history_days", selector: { number: { min: 0, max: 60, step: 1, mode: "box" } } },
+    ],
+  },
+  ...ENTITY_GROUPS.map((g) => ({
+    name: g.name,
+    type: "expandable",
+    flatten: true,
+    icon: g.icon,
+    schema: g.keys.map((key) => ({ name: key, selector: { entity: { domain: "sensor" } } })),
+  })),
+];
+
+// ha-form is lazy-loaded by the frontend; loading a built-in card editor pulls it in
+async function ensureHaForm() {
+  if (customElements.get("ha-form")) return;
+  try {
+    const helpers = await window.loadCardHelpers?.();
+    const card = await helpers?.createCardElement({ type: "entities", entities: [] });
+    await card?.constructor?.getConfigElement?.();
+  } catch (err) {
+    console.warn("sungrow-energy-flow-card: could not preload ha-form", err);
+  }
+}
+
+class SungrowEnergyFlowCardEditor extends HTMLElement {
+  setConfig(config) {
+    this._config = config;
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+
+  _lang() {
+    const lang = (this._hass?.locale?.language || "en").split("-")[0];
+    return EDITOR_LABELS[lang] ? lang : "en";
+  }
+
+  _render() {
+    if (!this._hass || !this._config) return;
+    if (!this._form) {
+      this._form = document.createElement("ha-form");
+      this._form.computeLabel = (s) => EDITOR_LABELS[this._lang()][s.name] ?? s.name;
+      this._form.computeHelper = (s) => EDITOR_HELPERS[this._lang()][s.name];
+      this._form.addEventListener("value-changed", (ev) => this._valueChanged(ev));
+      this.appendChild(this._form);
+    }
+    this._form.hass = this._hass;
+    this._form.schema = EDITOR_SCHEMA;
+    this._form.data = this._formData();
+  }
+
+  // Flat form data: options and every entity, with defaults filled in so the user sees what is used
+  _formData() {
+    const { entities = {}, title, ...rest } = this._config;
+    return {
+      ...DEFAULT_OPTIONS,
+      ...rest,
+      show_header: title !== false,
+      title: typeof title === "string" ? title : "",
+      ...DEFAULT_ENTITIES,
+      ...entities,
+    };
+  }
+
+  // Back to card config, keeping only values that differ from the defaults
+  _valueChanged(ev) {
+    ev.stopPropagation();
+    const value = ev.detail.value;
+    const config = { ...this._config };
+    delete config.title;
+    delete config.entities;
+
+    if (value.show_header === false) config.title = false;
+    else if (value.title) config.title = value.title;
+
+    for (const [key, def] of Object.entries(DEFAULT_OPTIONS)) {
+      if (value[key] === undefined || value[key] === null || value[key] === def) delete config[key];
+      else config[key] = value[key];
+    }
+
+    const entities = {};
+    for (const [key, def] of Object.entries(DEFAULT_ENTITIES)) {
+      if (value[key] && value[key] !== def) entities[key] = value[key];
+    }
+    if (Object.keys(entities).length) config.entities = entities;
+
+    this._config = config;
+    this._form.data = this._formData();
+    this.dispatchEvent(new CustomEvent("config-changed", { detail: { config }, bubbles: true, composed: true }));
+  }
+}
+
+customElements.define("sungrow-energy-flow-card-editor", SungrowEnergyFlowCardEditor);
 customElements.define("sungrow-energy-flow-card", SungrowEnergyFlowCard);
 
 window.customCards = window.customCards || [];

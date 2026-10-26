@@ -22,6 +22,7 @@ It works out of the box with the entity names of the [mkaiser Sungrow Modbus int
 - Uses the Home Assistant energy colours of your theme, works in light and dark mode
 - German and English, chosen from your Home Assistant language
 - Click any circle to open the entity's more-info dialog
+- **Visual editor**: all options and entities can be set in the dashboard UI, no YAML needed
 
 ## Installation
 
@@ -46,6 +47,9 @@ type: custom:sungrow-energy-flow-card
 ```
 
 That's it if you use the mkaiser integration with its default entity names.
+
+You can also add the card from the dashboard's **Add card** dialog and configure everything in the visual editor.
+The editor shows the entities currently in use and only writes the values you change to the YAML.
 
 ### Options
 
