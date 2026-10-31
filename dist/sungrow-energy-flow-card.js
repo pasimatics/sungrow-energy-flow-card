@@ -3,7 +3,7 @@
  * Animated power flow card for Sungrow hybrid inverters (Modbus, mkaiser sungrow integration).
  */
 
-const CARD_VERSION = "0.3.0";
+const CARD_VERSION = "0.4.0";
 
 const DEFAULT_ENTITIES = {
   pv_power: "sensor.total_dc_power",
@@ -26,10 +26,13 @@ const DEFAULT_ENTITIES = {
   daily_battery_charge_pv: "sensor.daily_battery_charge_from_pv",
   daily_battery_discharge: "sensor.daily_battery_discharge",
   daily_direct: "sensor.daily_direct_energy_consumption",
-  // Lifetime counters, used for the daily history via long-term statistics
+  // Lifetime counters, used for history and period totals via long-term statistics
   total_import: "sensor.total_imported_energy",
   total_direct: "sensor.total_direct_energy_consumption",
   total_battery_discharge: "sensor.total_battery_discharge",
+  total_pv: "sensor.total_pv_generation",
+  total_export: "sensor.total_exported_energy",
+  total_battery_charge_pv: "sensor.total_battery_charge_from_pv",
 };
 
 const DEFAULT_OPTIONS = {
@@ -37,6 +40,29 @@ const DEFAULT_OPTIONS = {
   pv_max: 10000,
   animation_speed: 1,
   history_days: 14,
+  period_selector: true,
+};
+
+const PERIODS = [1, 7, 30];
+
+// Per-day statistics field -> entity key of the lifetime counter it is derived from
+const STAT_FIELDS = {
+  imp: "total_import",
+  direct: "total_direct",
+  dis: "total_battery_discharge",
+  pv: "total_pv",
+  exp: "total_export",
+  chg: "total_battery_charge_pv",
+};
+
+// Same fields for the current day, taken from the live daily sensors
+const TODAY_FIELDS = {
+  imp: "daily_import",
+  direct: "daily_direct",
+  dis: "daily_battery_discharge",
+  pv: "daily_pv",
+  exp: "daily_export",
+  chg: "daily_battery_charge_pv",
 };
 
 const HISTORY_REFRESH_MS = 30 * 60 * 1000;
@@ -46,21 +72,23 @@ const I18N = {
     title: "Energiefluss", solar: "Solar", grid: "Netz", home: "Haus", battery: "Batterie",
     import: "Bezug", export: "Einspeisung", idle: "Ruhe",
     charging: "lädt", discharging: "entlädt", full_in: "voll in", empty_in: "leer in",
-    production: "Erzeugung heute", consumption: "Verbrauch heute",
+    production: "Erzeugung", consumption: "Verbrauch",
     direct: "Direkt", to_battery: "Batterie", to_grid: "Netz",
     from_solar: "Solar", from_battery: "Batterie", from_grid: "Netz",
-    autarky: "Autarkie", self_consumption: "Eigenverbrauch", battery_today: "Batterie heute",
+    autarky: "Autarkie", self_consumption: "Eigenverbrauch", battery_short: "Batterie",
     string: "String", history: "Autarkie · letzte {n} Tage", avg: "Ø",
+    today: "heute", last_days: "letzte {n} Tage", btn_today: "Heute", btn_days: "{n} Tage",
   },
   en: {
     title: "Energy flow", solar: "Solar", grid: "Grid", home: "Home", battery: "Battery",
     import: "Import", export: "Export", idle: "Idle",
     charging: "charging", discharging: "discharging", full_in: "full in", empty_in: "empty in",
-    production: "Production today", consumption: "Consumption today",
+    production: "Production", consumption: "Consumption",
     direct: "Direct", to_battery: "Battery", to_grid: "Grid",
     from_solar: "Solar", from_battery: "Battery", from_grid: "Grid",
-    autarky: "Self-sufficiency", self_consumption: "Self-consumption", battery_today: "Battery today",
+    autarky: "Self-sufficiency", self_consumption: "Self-consumption", battery_short: "Battery",
     string: "String", history: "Self-sufficiency · last {n} days", avg: "avg",
+    today: "today", last_days: "last {n} days", btn_today: "Today", btn_days: "{n} days",
   },
 };
 
@@ -105,14 +133,16 @@ class SungrowEnergyFlowCard extends HTMLElement {
     this._flows = {};
     this._raf = null;
     this._lastTs = null;
+    this._period = 1;
   }
 
   setConfig(config) {
     this._config = { ...DEFAULT_OPTIONS, ...config };
     this._entities = { ...DEFAULT_ENTITIES, ...(config.entities || {}) };
     this._built = false;
-    this._history = null;
-    this._historyTs = 0;
+    this._days = null;
+    this._statsTs = 0;
+    if (!this._config.period_selector) this._period = 1;
     if (this._hass) {
       this._build();
       this._update();
@@ -123,7 +153,7 @@ class SungrowEnergyFlowCard extends HTMLElement {
     this._hass = hass;
     if (!this._built) this._build();
     this._update();
-    this._loadHistory();
+    this._loadStats();
   }
 
   connectedCallback() {
@@ -273,13 +303,24 @@ class SungrowEnergyFlowCard extends HTMLElement {
         </div>
 
         <div class="stats">
+          ${
+            this._config.period_selector
+              ? `<div class="period" role="group">
+                   ${PERIODS.map(
+                     (p) => `<button type="button" data-period="${p}">${
+                       p === 1 ? this._t("btn_today") : this._t("btn_days").replace("{n}", p)
+                     }</button>`
+                   ).join("")}
+                 </div>`
+              : ""
+          }
           <div class="bar-block production">
-            <div class="bar-head"><span>${this._t("production")}</span><span class="total">–</span></div>
+            <div class="bar-head"><span class="name"></span><span class="total">–</span></div>
             <div class="bar"></div>
             <div class="legend"></div>
           </div>
           <div class="bar-block consumption">
-            <div class="bar-head"><span>${this._t("consumption")}</span><span class="total">–</span></div>
+            <div class="bar-head"><span class="name"></span><span class="total">–</span></div>
             <div class="bar"></div>
             <div class="legend"></div>
           </div>
@@ -288,14 +329,14 @@ class SungrowEnergyFlowCard extends HTMLElement {
             <div class="kpi selfuse"><div class="gauge"><span>–</span></div><div class="k-lbl">${this._t("self_consumption")}</div></div>
             <div class="kpi batt">
               <div class="k-val"><span class="in">–</span><span class="out">–</span></div>
-              <div class="k-lbl">${this._t("battery_today")}</div>
+              <div class="k-lbl"></div>
             </div>
           </div>
           ${
             this._config.history_days > 0
               ? `<div class="history">
                    <div class="bar-head">
-                     <span>${this._t("history").replace("{n}", this._config.history_days)}</span>
+                     <span class="name"></span>
                      <span class="total avg">–</span>
                    </div>
                    <div class="hist-chart"></div>
@@ -308,6 +349,13 @@ class SungrowEnergyFlowCard extends HTMLElement {
     const root = this.shadowRoot;
     root.querySelectorAll("[data-key]").forEach((el) =>
       el.addEventListener("click", () => this._moreInfo(el.dataset.key))
+    );
+    root.querySelectorAll("[data-period]").forEach((el) =>
+      el.addEventListener("click", () => {
+        this._period = Number(el.dataset.period);
+        this._updateStats();
+        this._loadStats();
+      })
     );
 
     this._flows = {};
@@ -517,14 +565,39 @@ class SungrowEnergyFlowCard extends HTMLElement {
     el.querySelector("span").textContent = value === null ? "–" : `${this._fmt(value, 0)} %`;
   }
 
+  // Autarky in % from energies { imp, direct, dis }, or null when unknown
+  _autarky({ imp, direct, dis }) {
+    if ([imp, direct, dis].some((v) => v === null || v === undefined)) return null;
+    const cons = imp + direct + dis;
+    return cons > 0.05 ? Math.max(0, Math.min(100, ((cons - imp) / cons) * 100)) : null;
+  }
+
+  // Energy totals of the selected period: past days from statistics, today from the live daily sensors
+  _periodTotals() {
+    const today = Object.fromEntries(Object.entries(TODAY_FIELDS).map(([field, key]) => [field, this._energy(key)]));
+    if (this._period === 1) return today;
+    if (!this._days) return {};
+    const totals = { ...today };
+    for (const day of this._days.slice(-this._period, -1)) {
+      for (const field of Object.keys(STAT_FIELDS)) totals[field] = (totals[field] ?? 0) + day[field];
+    }
+    return totals;
+  }
+
   _updateStats() {
     const c = COLORS;
-    const pv = this._energy("daily_pv");
-    const imp = this._energy("daily_import");
-    const exp = this._energy("daily_export");
-    const chg = this._energy("daily_battery_charge_pv");
-    const dis = this._energy("daily_battery_discharge");
-    const direct = this._energy("daily_direct");
+    const root = this.shadowRoot;
+    const label = this._period === 1 ? this._t("today") : this._t("last_days").replace("{n}", this._period);
+    root.querySelectorAll("[data-period]").forEach((el) =>
+      el.classList.toggle("active", Number(el.dataset.period) === this._period)
+    );
+    root.querySelector(".production .name").textContent = `${this._t("production")} ${label}`;
+    root.querySelector(".consumption .name").textContent = `${this._t("consumption")} ${label}`;
+    root.querySelector(".kpi.batt .k-lbl").textContent = `${this._t("battery_short")} ${label}`;
+
+    const totals = this._periodTotals();
+    const val = (field) => totals[field] ?? null;
+    const [pv, imp, exp, chg, dis, direct] = ["pv", "imp", "exp", "chg", "dis", "direct"].map(val);
 
     this._stackedBar("production", pv, [
       { l: this._t("direct"), v: direct, c: c.solar },
@@ -539,27 +612,31 @@ class SungrowEnergyFlowCard extends HTMLElement {
       { l: this._t("from_grid"), v: imp, c: c.gridIn },
     ]);
 
-    this._liveAutarky = consumption ? ((consumption - imp) / consumption) * 100 : null;
-    this._gauge("autarky", this._liveAutarky);
+    this._liveAutarky = this._autarky({
+      imp: this._energy("daily_import"),
+      direct: this._energy("daily_direct"),
+      dis: this._energy("daily_battery_discharge"),
+    });
+    this._gauge("autarky", this._autarky({ imp, direct, dis }));
     this._gauge("selfuse", pv ? ((pv - (exp ?? 0)) / pv) * 100 : null);
 
-    const batt = this.shadowRoot.querySelector(".kpi.batt");
-    batt.querySelector(".in").textContent = chg === null ? "–" : `+${this._fmt(chg, 1)}`;
-    batt.querySelector(".out").textContent = dis === null ? "–" : `−${this._fmt(dis, 1)} kWh`;
+    const batt = root.querySelector(".kpi.batt");
+    const kwh = (v) => this._fmt(v, v >= 100 ? 0 : 1);
+    batt.querySelector(".in").textContent = chg === null ? "–" : `+${kwh(chg)}`;
+    batt.querySelector(".out").textContent = dis === null ? "–" : `−${kwh(dis)} kWh`;
 
     this._renderHistory();
   }
 
-  // ---------- autarky history ----------
+  // ---------- statistics (history and period totals) ----------
 
-  // Daily autarky from long-term statistics of the lifetime counters:
-  // (direct PV + battery discharge) / (direct PV + battery discharge + grid import)
-  async _loadHistory() {
-    const days = this._config.history_days;
-    if (!days || this._historyLoading || Date.now() - this._historyTs < HISTORY_REFRESH_MS) return;
-    this._historyLoading = true;
-    const keys = ["total_import", "total_direct", "total_battery_discharge"];
-    const ids = keys.map((k) => this._entities[k]);
+  // Daily changes of the lifetime counters from Home Assistant's long-term statistics
+  async _loadStats() {
+    const days = Math.max(this._config.history_days, this._config.period_selector ? Math.max(...PERIODS) : 0);
+    if (!days || this._statsLoading || Date.now() - this._statsTs < HISTORY_REFRESH_MS) return;
+    this._statsLoading = true;
+    const fields = Object.keys(STAT_FIELDS);
+    const ids = fields.map((f) => this._entities[STAT_FIELDS[f]]);
     const start = new Date();
     start.setHours(0, 0, 0, 0);
     start.setDate(start.getDate() - (days - 1));
@@ -568,45 +645,52 @@ class SungrowEnergyFlowCard extends HTMLElement {
         type: "recorder/statistics_during_period",
         start_time: start.toISOString(),
         period: "day",
-        statistic_ids: ids,
+        statistic_ids: [...new Set(ids)],
         types: ["change"],
         units: { energy: "kWh" },
       });
-      const sums = new Map(); // date string -> [import, direct, discharge]
-      ids.forEach((id, idx) =>
-        (res[id] || []).forEach((row) => {
+      const sums = new Map(); // date string -> { field: kWh }
+      fields.forEach((field, idx) =>
+        (res[ids[idx]] || []).forEach((row) => {
           const key = new Date(typeof row.start === "number" ? row.start : Date.parse(row.start)).toDateString();
-          const v = sums.get(key) || [0, 0, 0];
-          v[idx] += row.change ?? 0;
+          const v = sums.get(key) || {};
+          v[field] = (v[field] ?? 0) + (row.change ?? 0);
           sums.set(key, v);
         })
       );
-      this._history = Array.from({ length: days }, (_, i) => {
+      this._days = Array.from({ length: days }, (_, i) => {
         const date = new Date(start);
         date.setDate(start.getDate() + i);
-        const v = sums.get(date.toDateString());
-        const cons = v ? v[0] + v[1] + v[2] : 0;
-        const value = cons > 0.05 ? Math.max(0, Math.min(100, ((cons - v[0]) / cons) * 100)) : null;
-        return { date, value };
+        const v = sums.get(date.toDateString()) || {};
+        return {
+          date,
+          ...Object.fromEntries(fields.map((f) => [f, v[f] ?? 0])),
+          autarky: this._autarky(v),
+        };
       });
     } catch (err) {
       console.warn("sungrow-energy-flow-card: could not load statistics", err);
     } finally {
-      this._historyTs = Date.now();
-      this._historyLoading = false;
+      this._statsTs = Date.now();
+      this._statsLoading = false;
     }
-    this._renderHistory();
+    this._updateStats();
   }
 
   _renderHistory() {
     const chart = this.shadowRoot.querySelector(".hist-chart");
-    if (!chart || !this._history) return;
+    if (!chart) return;
+    const n = this._period > 1 ? this._period : this._config.history_days;
+    this.shadowRoot.querySelector(".history .name").textContent = this._t("history").replace("{n}", n);
+    if (!this._days) return;
     const lang = this._hass?.locale?.language || "en";
     const today = new Date().toDateString();
     // Today's statistics lag up to an hour behind, so use the live value instead
-    const days = this._history.map((d) =>
-      d.date.toDateString() === today && this._liveAutarky != null ? { ...d, value: this._liveAutarky } : d
-    );
+    const days = this._days.slice(-n).map((d) => ({
+      date: d.date,
+      value: d.date.toDateString() === today && this._liveAutarky != null ? this._liveAutarky : d.autarky,
+    }));
+    chart.classList.toggle("dense", n > 14);
     chart.innerHTML = days
       .map(({ date, value }) => {
         const isToday = date.toDateString() === today;
@@ -734,6 +818,16 @@ const STYLES = `
   .hub.active ha-icon { color: var(--primary-color); }
 
   .stats { margin-top: 8px; display: grid; gap: 12px; }
+  .period {
+    display: flex; gap: 2px; padding: 3px; margin: 0 auto; border-radius: 999px;
+    background: color-mix(in srgb, var(--primary-text-color) 7%, transparent);
+  }
+  .period button {
+    border: 0; background: transparent; color: var(--secondary-text-color);
+    font: inherit; font-size: .8rem; padding: 4px 14px; border-radius: 999px; cursor: pointer;
+    transition: background .25s, color .25s;
+  }
+  .period button.active { background: var(--primary-color); color: var(--text-primary-color, #fff); }
   .bar-head { display: flex; justify-content: space-between; font-size: .85rem; color: var(--secondary-text-color); margin-bottom: 5px; }
   .bar-head .total { color: var(--primary-text-color); font-weight: 600; font-variant-numeric: tabular-nums; }
   .bar {
@@ -785,6 +879,9 @@ const STYLES = `
   .hcol.today .hbar { background: var(--success-color, #43a047); }
   .hval, .hday { font-size: .64rem; line-height: 1; color: var(--secondary-text-color); font-variant-numeric: tabular-nums; }
   .hcol.today .hval, .hcol.today .hday { color: var(--primary-text-color); font-weight: 600; }
+  .hist-chart.dense { gap: 2px; }
+  .hist-chart.dense .hcol:not(.today) .hval { visibility: hidden; }
+  .hist-chart.dense .hval, .hist-chart.dense .hday { font-size: .56rem; }
 
   @keyframes spin { to { transform: rotate(360deg); } }
   @keyframes pulse { 50% { opacity: .45; } }
@@ -803,11 +900,12 @@ const EDITOR_LABELS = {
     max_power: "Leistung für volle Animation",
     animation_speed: "Animationsgeschwindigkeit",
     history_days: "Tage im Autarkie-Verlauf",
+    period_selector: "Zeitraum-Buttons (Heute / 7 / 30 Tage)",
     power: "Leistung",
     battery: "Batterie",
     inverter: "Wechselrichter",
     daily: "Tagesenergie",
-    totals: "Gesamtzähler (Verlauf)",
+    totals: "Gesamtzähler (Verlauf & Zeiträume)",
     pv_power: "PV-Leistung",
     load_power: "Hausverbrauch",
     grid_import_power: "Netzbezug",
@@ -831,6 +929,9 @@ const EDITOR_LABELS = {
     total_import: "Netzbezug gesamt",
     total_direct: "Direktverbrauch gesamt",
     total_battery_discharge: "Batterieentladung gesamt",
+    total_pv: "PV-Erzeugung gesamt",
+    total_export: "Einspeisung gesamt",
+    total_battery_charge_pv: "Batterieladung aus PV gesamt",
   },
   en: {
     show_header: "Show header",
@@ -839,11 +940,12 @@ const EDITOR_LABELS = {
     max_power: "Power for full animation",
     animation_speed: "Animation speed",
     history_days: "Days in self-sufficiency history",
+    period_selector: "Period buttons (today / 7 / 30 days)",
     power: "Power",
     battery: "Battery",
     inverter: "Inverter",
     daily: "Daily energy",
-    totals: "Lifetime counters (history)",
+    totals: "Lifetime counters (history & periods)",
     pv_power: "PV power",
     load_power: "House load",
     grid_import_power: "Grid import",
@@ -867,6 +969,9 @@ const EDITOR_LABELS = {
     total_import: "Grid import total",
     total_direct: "Direct consumption total",
     total_battery_discharge: "Battery discharge total",
+    total_pv: "PV production total",
+    total_export: "Grid export total",
+    total_battery_charge_pv: "Battery charge from PV total",
   },
 };
 
@@ -904,11 +1009,19 @@ const ENTITY_GROUPS = [
       "daily_battery_charge_pv", "daily_battery_discharge", "daily_direct",
     ],
   },
-  { name: "totals", icon: "mdi:counter", keys: ["total_import", "total_direct", "total_battery_discharge"] },
+  {
+    name: "totals",
+    icon: "mdi:counter",
+    keys: [
+      "total_pv", "total_import", "total_export",
+      "total_direct", "total_battery_charge_pv", "total_battery_discharge",
+    ],
+  },
 ];
 
 const EDITOR_SCHEMA = [
   { name: "show_header", selector: { boolean: {} } },
+  { name: "period_selector", selector: { boolean: {} } },
   { name: "title", selector: { text: {} } },
   {
     name: "",

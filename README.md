@@ -16,7 +16,7 @@ It works out of the box with the entity names of the [mkaiser Sungrow Modbus int
 - **House**: ring split by source (solar / battery / grid) with percentages
 - **Battery**: state of charge ring, charge/discharge power, temperature and estimated time until **full** or **empty**
 - **Inverter status** and temperature in the header
-- **Daily balance**: where today's production went and where today's consumption came from
+- **Energy balance** for today, the last 7 or the last 30 days (switch with one tap): where the production went and where the consumption came from
 - **Self-sufficiency** and **self-consumption** gauges, battery charged/discharged today
 - **Self-sufficiency history** for the last days, calculated from Home Assistant long-term statistics
 - Uses the Home Assistant energy colours of your theme, works in light and dark mode
@@ -61,6 +61,7 @@ The editor shows the entities currently in use and only writes the values you ch
 | `pv_max`          | `10000`       | Peak PV power in W, used for the solar utilisation ring.                    |
 | `animation_speed` | `1`           | Speed factor for the flow animation (`0.5` = half speed, `2` = double).     |
 | `history_days`    | `14`          | Number of days in the self-sufficiency history. `0` hides it.               |
+| `period_selector` | `true`        | Show the *Today / 7 days / 30 days* buttons above the energy balance.       |
 
 ### Entities
 
@@ -91,8 +92,11 @@ All keys are optional – only set the ones that differ from the defaults.
 | `total_import`            | `sensor.total_imported_energy`             | kWh   |
 | `total_direct`            | `sensor.total_direct_energy_consumption`   | kWh   |
 | `total_battery_discharge` | `sensor.total_battery_discharge`           | kWh   |
+| `total_pv`                | `sensor.total_pv_generation`               | kWh   |
+| `total_export`            | `sensor.total_exported_energy`             | kWh   |
+| `total_battery_charge_pv` | `sensor.total_battery_charge_from_pv`      | kWh   |
 
-The `total_*` sensors need long-term statistics (`state_class: total` or `total_increasing`) – they are used for the history.
+The `total_*` sensors need long-term statistics (`state_class: total` or `total_increasing`) – they are used for the history and the 7/30 day totals.
 
 ### Example
 
@@ -114,7 +118,7 @@ self-sufficiency  = (consumption − grid import) / consumption
 self-consumption  = (PV production − grid export) / PV production
 ```
 
-The current day uses the daily sensors. Past days in the history use the daily change of the `total_*` counters from Home Assistant's long-term statistics.
+The current day uses the daily sensors. Past days (history and the 7/30 day totals) use the daily change of the `total_*` counters from Home Assistant's long-term statistics.
 Battery time estimates are `stored energy / discharge power` and `(capacity − stored energy) / charge power`.
 
 ## License
