@@ -18,6 +18,7 @@ It works out of the box with the entity names of the [mkaiser Sungrow Modbus int
 - **Inverter status** and temperature in the header
 - **Energy balance** for today, the last 7 or the last 30 days (switch with one tap): where the production went and where the consumption came from
 - **Self-sufficiency** and **self-consumption** gauges, battery charged/discharged today
+- **Production and consumption per day** as a bar chart – tap a day to see its exact values
 - **Self-sufficiency history** for the last days, calculated from Home Assistant long-term statistics
 - Uses the Home Assistant energy colours of your theme, works in light and dark mode
 - German and English, chosen from your Home Assistant language
@@ -62,6 +63,7 @@ The editor shows the entities currently in use and only writes the values you ch
 | `animation_speed` | `1`           | Speed factor for the flow animation (`0.5` = half speed, `2` = double).     |
 | `history_days`    | `14`          | Number of days in the self-sufficiency history. `0` hides it.               |
 | `period_selector` | `true`        | Show the *Today / 7 days / 30 days* buttons above the energy balance.       |
+| `daily_chart`     | `true`        | Show the production / consumption per day chart (follows the period).       |
 
 ### Entities
 

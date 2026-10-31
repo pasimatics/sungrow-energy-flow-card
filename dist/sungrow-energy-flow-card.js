@@ -41,6 +41,7 @@ const DEFAULT_OPTIONS = {
   animation_speed: 1,
   history_days: 14,
   period_selector: true,
+  daily_chart: true,
 };
 
 const PERIODS = [1, 7, 30];
@@ -78,6 +79,7 @@ const I18N = {
     autarky: "Autarkie", self_consumption: "Eigenverbrauch", battery_short: "Batterie",
     string: "String", history: "Autarkie · letzte {n} Tage", avg: "Ø",
     today: "heute", last_days: "letzte {n} Tage", btn_today: "Heute", btn_days: "{n} Tage",
+    daily_title: "Pro Tag · letzte {n} Tage",
   },
   en: {
     title: "Energy flow", solar: "Solar", grid: "Grid", home: "Home", battery: "Battery",
@@ -89,6 +91,7 @@ const I18N = {
     autarky: "Self-sufficiency", self_consumption: "Self-consumption", battery_short: "Battery",
     string: "String", history: "Self-sufficiency · last {n} days", avg: "avg",
     today: "today", last_days: "last {n} days", btn_today: "Today", btn_days: "{n} days",
+    daily_title: "Per day · last {n} days",
   },
 };
 
@@ -333,6 +336,21 @@ class SungrowEnergyFlowCard extends HTMLElement {
             </div>
           </div>
           ${
+            this._config.daily_chart
+              ? `<div class="daily">
+                   <div class="bar-head">
+                     <span class="name"></span>
+                     <span class="dlegend">
+                       <span><b style="background:${COLORS.solar}"></b>${this._t("production")}</span>
+                       <span><b style="background:${COLORS.home}"></b>${this._t("consumption")}</span>
+                     </span>
+                   </div>
+                   <div class="day-chart"></div>
+                   <div class="dinfo"></div>
+                 </div>`
+              : ""
+          }
+          ${
             this._config.history_days > 0
               ? `<div class="history">
                    <div class="bar-head">
@@ -357,6 +375,12 @@ class SungrowEnergyFlowCard extends HTMLElement {
         this._loadStats();
       })
     );
+    root.querySelector(".day-chart")?.addEventListener("click", (ev) => {
+      const col = ev.target.closest(".dcol");
+      if (!col) return;
+      this._selectedDay = col.dataset.day;
+      this._renderDaily();
+    });
 
     this._flows = {};
     for (const [id, line] of Object.entries(FLOW_LINES)) {
@@ -572,9 +596,18 @@ class SungrowEnergyFlowCard extends HTMLElement {
     return cons > 0.05 ? Math.max(0, Math.min(100, ((cons - imp) / cons) * 100)) : null;
   }
 
+  _todayValues() {
+    return Object.fromEntries(Object.entries(TODAY_FIELDS).map(([field, key]) => [field, this._energy(key)]));
+  }
+
+  // Number of days shown in the daily charts: the selected period, otherwise the history length
+  _chartDays() {
+    return this._period > 1 ? this._period : this._config.history_days || 7;
+  }
+
   // Energy totals of the selected period: past days from statistics, today from the live daily sensors
   _periodTotals() {
-    const today = Object.fromEntries(Object.entries(TODAY_FIELDS).map(([field, key]) => [field, this._energy(key)]));
+    const today = this._todayValues();
     if (this._period === 1) return today;
     if (!this._days) return {};
     const totals = { ...today };
@@ -625,6 +658,7 @@ class SungrowEnergyFlowCard extends HTMLElement {
     batt.querySelector(".in").textContent = chg === null ? "–" : `+${kwh(chg)}`;
     batt.querySelector(".out").textContent = dis === null ? "–" : `−${kwh(dis)} kWh`;
 
+    this._renderDaily();
     this._renderHistory();
   }
 
@@ -632,7 +666,11 @@ class SungrowEnergyFlowCard extends HTMLElement {
 
   // Daily changes of the lifetime counters from Home Assistant's long-term statistics
   async _loadStats() {
-    const days = Math.max(this._config.history_days, this._config.period_selector ? Math.max(...PERIODS) : 0);
+    const days = Math.max(
+      this._config.history_days,
+      this._config.period_selector ? Math.max(...PERIODS) : 0,
+      this._config.daily_chart ? this._chartDays() : 0
+    );
     if (!days || this._statsLoading || Date.now() - this._statsTs < HISTORY_REFRESH_MS) return;
     this._statsLoading = true;
     const fields = Object.keys(STAT_FIELDS);
@@ -675,6 +713,50 @@ class SungrowEnergyFlowCard extends HTMLElement {
       this._statsLoading = false;
     }
     this._updateStats();
+  }
+
+  // Production and consumption per day as paired bars; a tapped day shows its values below
+  _renderDaily() {
+    const chart = this.shadowRoot.querySelector(".day-chart");
+    if (!chart) return;
+    const n = this._chartDays();
+    this.shadowRoot.querySelector(".daily .name").textContent = this._t("daily_title").replace("{n}", n);
+    if (!this._days) return;
+    const lang = this._hass?.locale?.language || "en";
+    const today = new Date().toDateString();
+    const live = this._todayValues();
+    const sum = (...v) => (v.some((x) => x === null || x === undefined) ? null : v.reduce((a, b) => a + b, 0));
+    // Today's statistics lag up to an hour behind, so use the live values instead
+    const days = this._days.slice(-n).map((d) => {
+      const src = d.date.toDateString() === today ? live : d;
+      return { date: d.date, prod: src.pv ?? null, cons: sum(src.imp, src.direct, src.dis) };
+    });
+    const max = Math.max(1, ...days.flatMap((d) => [d.prod ?? 0, d.cons ?? 0]));
+    const pct = (v) => `${((v ?? 0) / max) * 100}%`;
+    const fmtKwh = (v) => (v === null ? "–" : `${this._fmt(v, 1)} kWh`);
+    const selected = days.some((d) => d.date.toDateString() === this._selectedDay) ? this._selectedDay : today;
+
+    chart.classList.toggle("dense", n > 14);
+    chart.innerHTML =
+      `<span class="dmax">${this._fmt(max, 0)} kWh</span>` +
+      days
+        .map(({ date, prod, cons }) => {
+          const key = date.toDateString();
+          const cls = `${key === today ? " today" : ""}${key === selected ? " sel" : ""}`;
+          return `
+            <div class="dcol${cls}" data-day="${key}">
+              <div class="dbars"><i class="p" style="height:${pct(prod)}"></i><i class="c" style="height:${pct(cons)}"></i></div>
+              <span class="hday">${date.toLocaleDateString(lang, { weekday: "narrow" })}</span>
+            </div>`;
+        })
+        .join("");
+
+    const sel = days.find((d) => d.date.toDateString() === selected);
+    this.shadowRoot.querySelector(".dinfo").innerHTML = sel
+      ? `<b>${sel.date.toLocaleDateString(lang, { weekday: "short", day: "numeric", month: "numeric" })}</b>
+         <span><b class="dot" style="background:${COLORS.solar}"></b>${fmtKwh(sel.prod)}</span>
+         <span><b class="dot" style="background:${COLORS.home}"></b>${fmtKwh(sel.cons)}</span>`
+      : "";
   }
 
   _renderHistory() {
@@ -865,6 +947,33 @@ const STYLES = `
   .k-val .in { color: var(--energy-battery-in-color, #f06292); }
   .k-val .out { color: var(--energy-battery-out-color, #4db6ac); }
 
+  .dlegend { display: flex; gap: 10px; font-size: .75rem; }
+  .dlegend b, .dinfo .dot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: middle;
+  }
+  .day-chart {
+    position: relative; display: flex; gap: 4px; height: 110px; padding-top: 14px; align-items: stretch;
+  }
+  .day-chart::before {
+    content: ""; position: absolute; left: 0; right: 0; top: 14px;
+    border-top: 1px dashed color-mix(in srgb, var(--primary-text-color) 15%, transparent);
+  }
+  .dmax { position: absolute; top: 0; left: 0; font-size: .6rem; line-height: 1; color: var(--secondary-text-color); }
+  .dcol { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 3px; cursor: pointer; }
+  .dbars { flex: 1; width: 100%; max-width: 28px; display: flex; align-items: flex-end; gap: 2px; }
+  .dbars i { flex: 1; min-height: 1px; border-radius: 3px 3px 0 0; transition: height .6s, opacity .3s; opacity: .55; }
+  .dbars .p { background: var(--energy-solar-color, #ff9800); }
+  .dbars .c { background: var(--primary-color, #03a9f4); }
+  .dcol.sel .dbars i { opacity: 1; }
+  .dcol.sel .hday { color: var(--primary-text-color); font-weight: 600; }
+  .day-chart.dense { gap: 2px; }
+  .day-chart.dense .dbars { gap: 1px; }
+  .day-chart.dense .hday { font-size: .56rem; }
+  .dinfo {
+    display: flex; justify-content: center; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px;
+    font-size: .8rem; color: var(--primary-text-color); font-variant-numeric: tabular-nums;
+  }
+
   .history { margin-top: 2px; }
   .hist-chart { display: flex; gap: 3px; height: 92px; align-items: stretch; }
   .hcol { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 3px; }
@@ -901,6 +1010,7 @@ const EDITOR_LABELS = {
     animation_speed: "Animationsgeschwindigkeit",
     history_days: "Tage im Autarkie-Verlauf",
     period_selector: "Zeitraum-Buttons (Heute / 7 / 30 Tage)",
+    daily_chart: "Diagramm Erzeugung & Verbrauch pro Tag",
     power: "Leistung",
     battery: "Batterie",
     inverter: "Wechselrichter",
@@ -941,6 +1051,7 @@ const EDITOR_LABELS = {
     animation_speed: "Animation speed",
     history_days: "Days in self-sufficiency history",
     period_selector: "Period buttons (today / 7 / 30 days)",
+    daily_chart: "Production & consumption per day chart",
     power: "Power",
     battery: "Battery",
     inverter: "Inverter",
@@ -1022,6 +1133,7 @@ const ENTITY_GROUPS = [
 const EDITOR_SCHEMA = [
   { name: "show_header", selector: { boolean: {} } },
   { name: "period_selector", selector: { boolean: {} } },
+  { name: "daily_chart", selector: { boolean: {} } },
   { name: "title", selector: { text: {} } },
   {
     name: "",
