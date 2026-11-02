@@ -1,6 +1,6 @@
 # Sungrow Energy Flow Card
 
-[![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz/docs/faq/custom_repositories)
+[![hacs_badge](https://img.shields.io/badge/HACS-Dashboard-41BDF5.svg)](https://hacs.xyz)
 [![Validate](https://github.com/pasimatics/sungrow-energy-flow-card/actions/workflows/validate.yml/badge.svg)](https://github.com/pasimatics/sungrow-energy-flow-card/actions/workflows/validate.yml)
 
 Animated energy flow card for Home Assistant with **Sungrow hybrid inverters** (SH-RT series etc.) connected via **Modbus**.
@@ -29,10 +29,14 @@ It works out of the box with the entity names of the [mkaiser Sungrow Modbus int
 
 ### HACS (recommended)
 
-1. HACS → ⋮ → **Custom repositories**
-2. Add `https://github.com/pasimatics/sungrow-energy-flow-card` with category **Dashboard**
-3. Search for **Sungrow Energy Flow Card** and download it
-4. Reload the browser (Ctrl+Shift+R)
+[![Open your Home Assistant instance and open this repository in HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=pasimatics&repository=sungrow-energy-flow-card&category=plugin)
+
+1. Open **HACS** in Home Assistant and search for **Sungrow Energy Flow Card** – or use the button above
+2. Click **Download**
+3. Reload the browser (Ctrl+Shift+R)
+
+If the card does not show up in the search yet, add it as a custom repository first:
+HACS → ⋮ → **Custom repositories** → `https://github.com/pasimatics/sungrow-energy-flow-card`, category **Dashboard**.
 
 ### Manual
 

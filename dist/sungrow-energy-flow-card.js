@@ -3,7 +3,7 @@
  * Animated power flow card for Sungrow hybrid inverters (Modbus, mkaiser sungrow integration).
  */
 
-const CARD_VERSION = "0.4.0";
+const CARD_VERSION = "0.4.1";
 
 const DEFAULT_ENTITIES = {
   pv_power: "sensor.total_dc_power",
@@ -271,7 +271,7 @@ class SungrowEnergyFlowCard extends HTMLElement {
         ${
           title !== false
             ? `<div class="header">
-                 <div class="title">${title ?? this._t("title")}</div>
+                 <div class="title"></div>
                  <div class="chip inverter"><span class="led"></span><span class="txt">–</span></div>
                </div>`
             : ""
@@ -365,6 +365,9 @@ class SungrowEnergyFlowCard extends HTMLElement {
       </ha-card>`;
 
     const root = this.shadowRoot;
+    // User-provided text is set as plain text, never parsed as HTML
+    const titleEl = root.querySelector(".title");
+    if (titleEl) titleEl.textContent = title ?? this._t("title");
     root.querySelectorAll("[data-key]").forEach((el) =>
       el.addEventListener("click", () => this._moreInfo(el.dataset.key))
     );
