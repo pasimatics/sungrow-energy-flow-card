@@ -93,6 +93,8 @@ All keys are optional – only set the ones that differ from the defaults.
 | `mppt4_power`             | `sensor.mppt4_power`                       | W/kW  |
 | `grid_power`              | –                                          | W/kW  |
 | `battery_power`           | –                                          | W/kW  |
+| `autarky`                 | –                                          | %     |
+| `self_consumption`        | –                                          | %     |
 | `daily_pv`                | `sensor.daily_pv_generation`               | kWh   |
 | `daily_import`            | `sensor.daily_imported_energy`             | kWh   |
 | `daily_export`            | `sensor.daily_exported_energy`             | kWh   |
@@ -117,6 +119,7 @@ A negative house load (as reported by Fronius) is shown as a positive value.
 - **No daily sensor** (`daily_*`): today's value is calculated from the matching `total_*` counter – its current value minus its value at the end of yesterday from the long-term statistics.
 - **No direct consumption counter**: direct consumption is derived as `PV production − export − battery charge`.
 - **No battery sensors at all**: battery energy is treated as 0.
+- **Self-sufficiency / self-consumption sensors** (`autarky`, `self_consumption`, optional, in %): used when the value cannot be calculated from the energy counters. Today shows the current sensor value, past days the daily mean from the long-term statistics, 7/30 days the average of the days.
 - Anything that cannot be determined is shown as `–`.
 
 ### Example: Fronius
@@ -134,6 +137,8 @@ entities:
   mppt2_power: sensor.pv_string_2_power
   mppt3_power: sensor.pv_string_3_power
   inverter_state: sensor.inverter_status
+  autarky: sensor.solarnet_relative_autonomy
+  self_consumption: sensor.solarnet_relative_self_consumption
   total_pv: sensor.inverter_energy_total
   total_import: sensor.smart_meter_energy_real_consumed
   total_export: sensor.smart_meter_energy_real_produced

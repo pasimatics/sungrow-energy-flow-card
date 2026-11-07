@@ -25,6 +25,10 @@ const DEFAULT_ENTITIES = {
   // Optional signed alternatives (e.g. Fronius): grid > 0 = import, battery > 0 = discharge
   grid_power: "",
   battery_power: "",
+  // Optional ratio sensors in % (e.g. Fronius relative autonomy / self consumption),
+  // used when the value cannot be calculated from energy counters
+  autarky: "",
+  self_consumption: "",
   daily_pv: "sensor.daily_pv_generation",
   daily_import: "sensor.daily_imported_energy",
   daily_export: "sensor.daily_exported_energy",
@@ -616,6 +620,30 @@ class SungrowEnergyFlowCard extends HTMLElement {
 
   // Today's energy per field: the daily sensor if there is one, otherwise the lifetime counter
   // minus its value at midnight (from statistics), e.g. for Fronius which only has total counters
+  // Self-consumption in % from energies { pv, exp }, or null when unknown
+  _selfUse({ pv, exp }) {
+    if (pv == null || exp == null || pv <= 0.05) return null;
+    return Math.max(0, Math.min(100, ((pv - exp) / pv) * 100));
+  }
+
+  // Ratio sensor value in %, clamped, or null
+  _ratio(key) {
+    const v = this._num(key);
+    return v === null ? null : Math.max(0, Math.min(100, v));
+  }
+
+  // Gauge value of the selected period: calculated from the period totals if possible,
+  // otherwise the average of the daily values (today: calculated or ratio sensor)
+  _periodRatio(field, calculated, todayValue) {
+    if (calculated !== null) return calculated;
+    if (this._period === 1) return todayValue;
+    if (!this._days) return null;
+    const values = [...this._days.slice(-this._period, -1).map((d) => d[field]), todayValue].filter(
+      (v) => v !== null && v !== undefined
+    );
+    return values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
+  }
+
   _todayValues() {
     const values = {};
     for (const [field, key] of Object.entries(TODAY_FIELDS)) {
@@ -692,9 +720,10 @@ class SungrowEnergyFlowCard extends HTMLElement {
       { l: this._t("from_grid"), v: imp, c: c.gridIn },
     ]);
 
-    this._liveAutarky = this._autarky(todayValues);
-    this._gauge("autarky", this._autarky({ imp, direct, dis }));
-    this._gauge("selfuse", pv && exp !== null ? Math.max(0, ((pv - exp) / pv) * 100) : null);
+    this._liveAutarky = this._autarky(todayValues) ?? this._ratio("autarky");
+    const liveSelfUse = this._selfUse(todayValues) ?? this._ratio("self_consumption");
+    this._gauge("autarky", this._periodRatio("autarky", this._autarky({ imp, direct, dis }), this._liveAutarky));
+    this._gauge("selfuse", this._periodRatio("selfuse", this._selfUse({ pv, exp }), liveSelfUse));
 
     const batt = root.querySelector(".kpi.batt");
     const kwh = (v) => this._fmt(v, v >= 100 ? 0 : 1);
@@ -724,6 +753,7 @@ class SungrowEnergyFlowCard extends HTMLElement {
     const start = new Date();
     start.setHours(0, 0, 0, 0);
     start.setDate(start.getDate() - (days - 1));
+    const ratioIds = [this._entities.autarky, this._entities.self_consumption];
     const todayKey = new Date().toDateString();
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
@@ -733,8 +763,8 @@ class SungrowEnergyFlowCard extends HTMLElement {
         type: "recorder/statistics_during_period",
         start_time: start.toISOString(),
         period: "day",
-        statistic_ids: [...new Set(ids.filter(Boolean))],
-        types: ["change", "state"],
+        statistic_ids: [...new Set([...ids, ...ratioIds].filter(Boolean))],
+        types: ["change", "state", "mean"],
         units: { energy: "kWh" },
       });
       const sums = new Map(); // date string -> { field: kWh }
@@ -752,14 +782,29 @@ class SungrowEnergyFlowCard extends HTMLElement {
           if (key === todayKey && Number.isFinite(row.change)) todayChange[field] = row.change;
         })
       );
+      // Daily mean of the optional ratio sensors, fallback for days without energy counters
+      const means = new Map(); // date string -> { autarky, selfuse }
+      ["autarky", "selfuse"].forEach((field, idx) =>
+        ((ratioIds[idx] && res[ratioIds[idx]]) || []).forEach((row) => {
+          if (!Number.isFinite(row.mean)) return;
+          const key = new Date(typeof row.start === "number" ? row.start : Date.parse(row.start)).toDateString();
+          means.set(key, { ...means.get(key), [field]: Math.max(0, Math.min(100, row.mean)) });
+        })
+      );
       this._baseline = baseline;
       this._todayChange = todayChange;
       this._days = Array.from({ length: days }, (_, i) => {
         const date = new Date(start);
         date.setDate(start.getDate() + i);
         const v = sums.get(date.toDateString()) || {};
+        const m = means.get(date.toDateString()) || {};
         const values = this._derive(Object.fromEntries(fields.map((f) => [f, known.has(f) ? v[f] ?? 0 : null])));
-        return { date, ...values, autarky: this._autarky(values) };
+        return {
+          date,
+          ...values,
+          autarky: this._autarky(values) ?? m.autarky ?? null,
+          selfuse: this._selfUse(values) ?? m.selfuse ?? null,
+        };
       });
     } catch (err) {
       console.warn("sungrow-energy-flow-card: could not load statistics", err);
@@ -1083,6 +1128,9 @@ const EDITOR_LABELS = {
     mppt4_power: "String 4 (MPPT4)",
     grid_power: "Netzleistung mit Vorzeichen",
     battery_power: "Batterieleistung mit Vorzeichen",
+    ratios: "Kennzahlen (optional)",
+    autarky: "Autarkiegrad",
+    self_consumption: "Eigenverbrauchsquote",
     battery_soc: "Ladestand",
     battery_energy: "Gespeicherte Energie",
     battery_capacity: "Kapazität",
@@ -1128,6 +1176,9 @@ const EDITOR_LABELS = {
     mppt4_power: "String 4 (MPPT4)",
     grid_power: "Signed grid power",
     battery_power: "Signed battery power",
+    ratios: "Ratios (optional)",
+    autarky: "Self-sufficiency",
+    self_consumption: "Self-consumption rate",
     battery_soc: "State of charge",
     battery_energy: "Stored energy",
     battery_capacity: "Capacity",
@@ -1156,6 +1207,7 @@ const EDITOR_HELPERS = {
     history_days: "0 blendet den Verlauf aus",
     grid_power: "Optional, ersetzt Bezug/Einspeisung: + = Bezug, − = Einspeisung (z. B. Fronius)",
     battery_power: "Optional, ersetzt Lade-/Entladeleistung: + = Entladen, − = Laden",
+    ratios: "Sensoren in % (z. B. Fronius) – nur genutzt, wenn der Wert nicht aus den Energiezählern berechnet werden kann",
     daily: "Optional – fehlt ein Tagessensor, wird der Wert aus dem Gesamtzähler berechnet",
     totals: "Benötigen Langzeitstatistiken (state_class total / total_increasing)",
   },
@@ -1165,6 +1217,7 @@ const EDITOR_HELPERS = {
     history_days: "0 hides the history",
     grid_power: "Optional, replaces import/export: + = import, − = export (e.g. Fronius)",
     battery_power: "Optional, replaces charge/discharge power: + = discharge, − = charge",
+    ratios: "Sensors in % (e.g. Fronius) – only used when the value cannot be calculated from the energy counters",
     daily: "Optional – if a daily sensor is missing, the value is calculated from the lifetime counter",
     totals: "Require long-term statistics (state_class total / total_increasing)",
   },
@@ -1182,6 +1235,7 @@ const ENTITY_GROUPS = [
   },
   { name: "battery", icon: "mdi:battery", keys: ["battery_soc", "battery_energy", "battery_capacity", "battery_temperature"] },
   { name: "inverter", icon: "mdi:sine-wave", keys: ["inverter_state", "inverter_temperature"] },
+  { name: "ratios", icon: "mdi:percent-circle", keys: ["autarky", "self_consumption"] },
   {
     name: "daily",
     icon: "mdi:calendar-today",
