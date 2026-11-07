@@ -3,7 +3,7 @@
  * Animated power flow card for Sungrow hybrid inverters (Modbus, mkaiser sungrow integration).
  */
 
-const CARD_VERSION = "0.4.1";
+const CARD_VERSION = "0.5.0";
 
 const DEFAULT_ENTITIES = {
   pv_power: "sensor.total_dc_power",
@@ -20,6 +20,11 @@ const DEFAULT_ENTITIES = {
   inverter_temperature: "sensor.inverter_temperature",
   mppt1_power: "sensor.mppt1_power",
   mppt2_power: "sensor.mppt2_power",
+  mppt3_power: "sensor.mppt3_power",
+  mppt4_power: "sensor.mppt4_power",
+  // Optional signed alternatives (e.g. Fronius): grid > 0 = import, battery > 0 = discharge
+  grid_power: "",
+  battery_power: "",
   daily_pv: "sensor.daily_pv_generation",
   daily_import: "sensor.daily_imported_energy",
   daily_export: "sensor.daily_exported_energy",
@@ -65,6 +70,8 @@ const TODAY_FIELDS = {
   exp: "daily_export",
   chg: "daily_battery_charge_pv",
 };
+
+const MPPT_KEYS = ["mppt1_power", "mppt2_power", "mppt3_power", "mppt4_power"];
 
 const HISTORY_REFRESH_MS = 30 * 60 * 1000;
 
@@ -209,7 +216,7 @@ class SungrowEnergyFlowCard extends HTMLElement {
     const v = this._num(key);
     if (v === null) return null;
     const unit = this._state(key).attributes.unit_of_measurement;
-    return unit === "Wh" ? v / 1000 : v;
+    return unit === "Wh" ? v / 1000 : unit === "MWh" ? v * 1000 : v;
   }
 
   _fmt(value, digits) {
@@ -433,17 +440,20 @@ class SungrowEnergyFlowCard extends HTMLElement {
     const c = COLORS;
 
     const pv = Math.max(0, this._power("pv_power") ?? 0);
-    const load = Math.max(0, this._power("load_power") ?? 0);
-    const gridIn = this._power("grid_import_power") ?? 0;
-    const gridOut = this._power("grid_export_power") ?? 0;
-    const grid = gridIn - gridOut; // >0 import
-    const batIn = this._power("battery_charge_power") ?? 0;
-    const batOut = this._power("battery_discharge_power") ?? 0;
-    const bat = batOut - batIn; // >0 discharge
+    // Some integrations (e.g. Fronius) report the house load as a negative value
+    const load = Math.abs(this._power("load_power") ?? 0);
+    // >0 import; a signed grid_power sensor takes precedence over separate import/export sensors
+    const grid =
+      this._power("grid_power") ??
+      (this._power("grid_import_power") ?? 0) - (this._power("grid_export_power") ?? 0);
+    // >0 discharge
+    const bat =
+      this._power("battery_power") ??
+      (this._power("battery_discharge_power") ?? 0) - (this._power("battery_charge_power") ?? 0);
     const soc = this._num("battery_soc");
 
     // --- Solar ---
-    const strings = ["mppt1_power", "mppt2_power"]
+    const strings = MPPT_KEYS
       .map((k, i) => ({ i: i + 1, w: this._power(k) }))
       .filter((s) => s.w !== null);
     this._setNode("pv", {
@@ -460,6 +470,7 @@ class SungrowEnergyFlowCard extends HTMLElement {
     // --- Grid ---
     const exporting = grid < -MIN_ACTIVE_W;
     const gridColor = exporting ? c.gridOut : c.gridIn;
+    root.querySelector(".node.grid").dataset.key = this._state("grid_power") ? "grid_power" : "grid_import_power";
     this._setNode("grid", {
       value: this._fmtPower(grid),
       color: gridColor,
@@ -599,8 +610,38 @@ class SungrowEnergyFlowCard extends HTMLElement {
     return cons > 0.05 ? Math.max(0, Math.min(100, ((cons - imp) / cons) * 100)) : null;
   }
 
+  _exists(key) {
+    return !!this._state(key);
+  }
+
+  // Today's energy per field: the daily sensor if there is one, otherwise the lifetime counter
+  // minus its value at midnight (from statistics), e.g. for Fronius which only has total counters
   _todayValues() {
-    return Object.fromEntries(Object.entries(TODAY_FIELDS).map(([field, key]) => [field, this._energy(key)]));
+    const values = {};
+    for (const [field, key] of Object.entries(TODAY_FIELDS)) {
+      let v = this._energy(key);
+      if (v === null) {
+        const total = this._energy(STAT_FIELDS[field]);
+        const base = this._baseline?.[field];
+        if (total !== null && base != null && total >= base) v = total - base;
+        else v = this._todayChange?.[field] ?? null;
+      }
+      values[field] = v;
+    }
+    return this._derive(values);
+  }
+
+  // Fill gaps that follow from the other values: no battery sensors at all -> no battery;
+  // no direct consumption counter -> PV production minus export and battery charge
+  _derive(v) {
+    const out = { ...v };
+    const none = (field) => !this._exists(TODAY_FIELDS[field]) && !this._exists(STAT_FIELDS[field]);
+    if (out.chg == null && none("chg")) out.chg = 0;
+    if (out.dis == null && none("dis")) out.dis = 0;
+    if (out.direct == null && out.pv != null && out.exp != null && out.chg != null) {
+      out.direct = Math.max(0, out.pv - out.exp - out.chg);
+    }
+    return out;
   }
 
   // Number of days shown in the daily charts: the selected period, otherwise the history length
@@ -615,7 +656,9 @@ class SungrowEnergyFlowCard extends HTMLElement {
     if (!this._days) return {};
     const totals = { ...today };
     for (const day of this._days.slice(-this._period, -1)) {
-      for (const field of Object.keys(STAT_FIELDS)) totals[field] = (totals[field] ?? 0) + day[field];
+      for (const field of Object.keys(STAT_FIELDS)) {
+        totals[field] = totals[field] == null || day[field] == null ? null : totals[field] + day[field];
+      }
     }
     return totals;
   }
@@ -631,6 +674,7 @@ class SungrowEnergyFlowCard extends HTMLElement {
     root.querySelector(".consumption .name").textContent = `${this._t("consumption")} ${label}`;
     root.querySelector(".kpi.batt .k-lbl").textContent = `${this._t("battery_short")} ${label}`;
 
+    const todayValues = this._todayValues();
     const totals = this._periodTotals();
     const val = (field) => totals[field] ?? null;
     const [pv, imp, exp, chg, dis, direct] = ["pv", "imp", "exp", "chg", "dis", "direct"].map(val);
@@ -648,13 +692,9 @@ class SungrowEnergyFlowCard extends HTMLElement {
       { l: this._t("from_grid"), v: imp, c: c.gridIn },
     ]);
 
-    this._liveAutarky = this._autarky({
-      imp: this._energy("daily_import"),
-      direct: this._energy("daily_direct"),
-      dis: this._energy("daily_battery_discharge"),
-    });
+    this._liveAutarky = this._autarky(todayValues);
     this._gauge("autarky", this._autarky({ imp, direct, dis }));
-    this._gauge("selfuse", pv ? ((pv - (exp ?? 0)) / pv) * 100 : null);
+    this._gauge("selfuse", pv && exp !== null ? Math.max(0, ((pv - exp) / pv) * 100) : null);
 
     const batt = root.querySelector(".kpi.batt");
     const kwh = (v) => this._fmt(v, v >= 100 ? 0 : 1);
@@ -669,45 +709,57 @@ class SungrowEnergyFlowCard extends HTMLElement {
 
   // Daily changes of the lifetime counters from Home Assistant's long-term statistics
   async _loadStats() {
+    // At least yesterday and today: yesterday's last counter value is the baseline for today's energy
     const days = Math.max(
+      2,
       this._config.history_days,
       this._config.period_selector ? Math.max(...PERIODS) : 0,
       this._config.daily_chart ? this._chartDays() : 0
     );
-    if (!days || this._statsLoading || Date.now() - this._statsTs < HISTORY_REFRESH_MS) return;
+    const dayChanged = this._days && this._days.at(-1).date.toDateString() !== new Date().toDateString();
+    if (this._statsLoading || (!dayChanged && Date.now() - this._statsTs < HISTORY_REFRESH_MS)) return;
     this._statsLoading = true;
     const fields = Object.keys(STAT_FIELDS);
     const ids = fields.map((f) => this._entities[STAT_FIELDS[f]]);
     const start = new Date();
     start.setHours(0, 0, 0, 0);
     start.setDate(start.getDate() - (days - 1));
+    const todayKey = new Date().toDateString();
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayKey = yesterday.toDateString();
     try {
       const res = await this._hass.callWS({
         type: "recorder/statistics_during_period",
         start_time: start.toISOString(),
         period: "day",
-        statistic_ids: [...new Set(ids)],
-        types: ["change"],
+        statistic_ids: [...new Set(ids.filter(Boolean))],
+        types: ["change", "state"],
         units: { energy: "kWh" },
       });
       const sums = new Map(); // date string -> { field: kWh }
+      const known = new Set(); // fields whose counter has statistics at all
+      const baseline = {}; // field -> counter value at the end of yesterday
+      const todayChange = {}; // field -> change so far today (lags up to an hour)
       fields.forEach((field, idx) =>
-        (res[ids[idx]] || []).forEach((row) => {
+        ((ids[idx] && res[ids[idx]]) || []).forEach((row) => {
+          known.add(field);
           const key = new Date(typeof row.start === "number" ? row.start : Date.parse(row.start)).toDateString();
           const v = sums.get(key) || {};
           v[field] = (v[field] ?? 0) + (row.change ?? 0);
           sums.set(key, v);
+          if (key === yesterdayKey && Number.isFinite(row.state)) baseline[field] = row.state;
+          if (key === todayKey && Number.isFinite(row.change)) todayChange[field] = row.change;
         })
       );
+      this._baseline = baseline;
+      this._todayChange = todayChange;
       this._days = Array.from({ length: days }, (_, i) => {
         const date = new Date(start);
         date.setDate(start.getDate() + i);
         const v = sums.get(date.toDateString()) || {};
-        return {
-          date,
-          ...Object.fromEntries(fields.map((f) => [f, v[f] ?? 0])),
-          autarky: this._autarky(v),
-        };
+        const values = this._derive(Object.fromEntries(fields.map((f) => [f, known.has(f) ? v[f] ?? 0 : null])));
+        return { date, ...values, autarky: this._autarky(values) };
       });
     } catch (err) {
       console.warn("sungrow-energy-flow-card: could not load statistics", err);
@@ -1027,6 +1079,10 @@ const EDITOR_LABELS = {
     battery_discharge_power: "Batterie Entladeleistung",
     mppt1_power: "String 1 (MPPT1)",
     mppt2_power: "String 2 (MPPT2)",
+    mppt3_power: "String 3 (MPPT3)",
+    mppt4_power: "String 4 (MPPT4)",
+    grid_power: "Netzleistung mit Vorzeichen",
+    battery_power: "Batterieleistung mit Vorzeichen",
     battery_soc: "Ladestand",
     battery_energy: "Gespeicherte Energie",
     battery_capacity: "Kapazität",
@@ -1068,6 +1124,10 @@ const EDITOR_LABELS = {
     battery_discharge_power: "Battery discharge power",
     mppt1_power: "String 1 (MPPT1)",
     mppt2_power: "String 2 (MPPT2)",
+    mppt3_power: "String 3 (MPPT3)",
+    mppt4_power: "String 4 (MPPT4)",
+    grid_power: "Signed grid power",
+    battery_power: "Signed battery power",
     battery_soc: "State of charge",
     battery_energy: "Stored energy",
     battery_capacity: "Capacity",
@@ -1094,12 +1154,18 @@ const EDITOR_HELPERS = {
     title: "Leer lassen für den Standardtitel",
     animation_speed: "1 = normal, kleiner = langsamer",
     history_days: "0 blendet den Verlauf aus",
+    grid_power: "Optional, ersetzt Bezug/Einspeisung: + = Bezug, − = Einspeisung (z. B. Fronius)",
+    battery_power: "Optional, ersetzt Lade-/Entladeleistung: + = Entladen, − = Laden",
+    daily: "Optional – fehlt ein Tagessensor, wird der Wert aus dem Gesamtzähler berechnet",
     totals: "Benötigen Langzeitstatistiken (state_class total / total_increasing)",
   },
   en: {
     title: "Leave empty for the default title",
     animation_speed: "1 = normal, lower = slower",
     history_days: "0 hides the history",
+    grid_power: "Optional, replaces import/export: + = import, − = export (e.g. Fronius)",
+    battery_power: "Optional, replaces charge/discharge power: + = discharge, − = charge",
+    daily: "Optional – if a daily sensor is missing, the value is calculated from the lifetime counter",
     totals: "Require long-term statistics (state_class total / total_increasing)",
   },
 };
@@ -1110,7 +1176,8 @@ const ENTITY_GROUPS = [
     icon: "mdi:flash",
     keys: [
       "pv_power", "load_power", "grid_import_power", "grid_export_power",
-      "battery_charge_power", "battery_discharge_power", "mppt1_power", "mppt2_power",
+      "battery_charge_power", "battery_discharge_power", "grid_power", "battery_power",
+      ...MPPT_KEYS,
     ],
   },
   { name: "battery", icon: "mdi:battery", keys: ["battery_soc", "battery_energy", "battery_capacity", "battery_temperature"] },

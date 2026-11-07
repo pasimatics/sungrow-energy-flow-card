@@ -89,6 +89,10 @@ All keys are optional – only set the ones that differ from the defaults.
 | `inverter_temperature`    | `sensor.inverter_temperature`              | °C    |
 | `mppt1_power`             | `sensor.mppt1_power`                       | W/kW  |
 | `mppt2_power`             | `sensor.mppt2_power`                       | W/kW  |
+| `mppt3_power`             | `sensor.mppt3_power`                       | W/kW  |
+| `mppt4_power`             | `sensor.mppt4_power`                       | W/kW  |
+| `grid_power`              | –                                          | W/kW  |
+| `battery_power`           | –                                          | W/kW  |
 | `daily_pv`                | `sensor.daily_pv_generation`               | kWh   |
 | `daily_import`            | `sensor.daily_imported_energy`             | kWh   |
 | `daily_export`            | `sensor.daily_exported_energy`             | kWh   |
@@ -103,6 +107,41 @@ All keys are optional – only set the ones that differ from the defaults.
 | `total_battery_charge_pv` | `sensor.total_battery_charge_from_pv`      | kWh   |
 
 The `total_*` sensors need long-term statistics (`state_class: total` or `total_increasing`) – they are used for the history and the 7/30 day totals.
+
+Strings (`mppt*_power`) whose entity does not exist are simply not shown.
+`grid_power` (positive = import, negative = export) and `battery_power` (positive = discharge, negative = charge) are optional signed sensors; when set they replace the separate import/export or charge/discharge sensors.
+A negative house load (as reported by Fronius) is shown as a positive value.
+
+### Missing daily or lifetime sensors
+
+- **No daily sensor** (`daily_*`): today's value is calculated from the matching `total_*` counter – its current value minus its value at the end of yesterday from the long-term statistics.
+- **No direct consumption counter**: direct consumption is derived as `PV production − export − battery charge`.
+- **No battery sensors at all**: battery energy is treated as 0.
+- Anything that cannot be determined is shown as `–`.
+
+### Example: Fronius
+
+The Fronius integration only has lifetime energy counters and signed power values. With a smart meter and three strings:
+
+```yaml
+type: custom:sungrow-energy-flow-card
+title: PV
+entities:
+  pv_power: sensor.solarnet_power_photovoltaics
+  load_power: sensor.solarnet_power_load
+  grid_power: sensor.solarnet_power_grid
+  mppt1_power: sensor.pv_string_1_power
+  mppt2_power: sensor.pv_string_2_power
+  mppt3_power: sensor.pv_string_3_power
+  inverter_state: sensor.inverter_status
+  total_pv: sensor.inverter_energy_total
+  total_import: sensor.smart_meter_energy_real_consumed
+  total_export: sensor.smart_meter_energy_real_produced
+```
+
+Entity IDs differ between installations – pick yours in the visual editor.
+If only the PV total counter exists, the card shows production; consumption, self-sufficiency and self-consumption need grid import and export counters.
+You can create them from the grid power with the **Integral (Riemann sum)** helper – e.g. from template sensors for the positive (import) and negative (export) part of `power_grid`.
 
 ### Example
 
