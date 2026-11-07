@@ -500,8 +500,9 @@ class SungrowEnergyFlowCard extends HTMLElement {
     const charging = bat < -MIN_ACTIVE_W;
     const discharging = bat > MIN_ACTIVE_W;
     const batColor = charging ? c.batIn : c.batOut;
-    const energy = this._energy("battery_energy");
     const capacity = this._energy("battery_capacity");
+    // Without a stored energy sensor (e.g. Fronius) it follows from state of charge and capacity
+    const energy = this._energy("battery_energy") ?? (soc !== null && capacity !== null ? (soc / 100) * capacity : null);
     let eta = "";
     if (energy !== null && capacity !== null) {
       const dur = discharging

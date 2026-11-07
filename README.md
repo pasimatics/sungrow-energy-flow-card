@@ -170,6 +170,7 @@ self-consumption  = (PV production − grid export) / PV production
 
 The current day uses the daily sensors. Past days (history and the 7/30 day totals) use the daily change of the `total_*` counters from Home Assistant's long-term statistics.
 Battery time estimates are `stored energy / discharge power` and `(capacity − stored energy) / charge power`.
+Without a `battery_energy` sensor, the stored energy is calculated as `state of charge × capacity`.
 
 ## License
 
